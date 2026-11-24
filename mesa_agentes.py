@@ -32,7 +32,10 @@ GT = "https://api.geckoterminal.com/api/v2"
 RUG = "https://api.rugcheck.xyz/v1"
 PAUSA_API = 2.3  # segundos entre chamadas; a API gratuita aceita cerca de 30 por minuto
 # pools de SOL e stablecoins não entram: o teste é de memecoins
-EXCLUIR_NOMES = {"SOL", "WSOL", "USDC", "USDT", "USDS", "PYUSD"}
+EXCLUIR_NOMES = {
+    "SOL", "WSOL", "USDC", "USDT", "USDS", "PYUSD", "USDE", "USDG",
+    "WETH", "ETH", "WBTC", "CBBTC", "BTC", "JITOSOL", "MSOL", "BSOL", "JUPSOL", "INF",
+}
 EXCLUIR_MINTS = {
     "So11111111111111111111111111111111111111112",
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
@@ -125,7 +128,7 @@ def gravar_json(caminho, obj):
 # ---------------------------------------------------------------- dados reais
 def cmd_descobrir(a):
     achados = {}
-    rotas = ["trending_pools", "pools?sort=h24_volume_usd_desc"]
+    rotas = ["trending_pools"]  # só pools em alta; o ranking por volume puro traz BTC, ETH e stablecoins
     for rota in rotas:
         for pagina in range(1, a.paginas + 1):
             sep = "&" if "?" in rota else "?"
@@ -142,6 +145,7 @@ def cmd_descobrir(a):
                     continue
                 liq = float(at.get("reserve_in_usd") or 0)
                 vol24 = float((at.get("volume_usd") or {}).get("h24") or 0)
+                fdv = float(at.get("fdv_usd") or 0)
                 criado = at.get("pool_created_at")
                 idade_h = None
                 if criado:
@@ -153,12 +157,13 @@ def cmd_descobrir(a):
                 base = (((it.get("relationships") or {}).get("base_token") or {}).get("data") or {}).get("id", "")
                 mint = base.split("_", 1)[1] if "_" in base else base
                 nome = (at.get("name") or "?").split(" / ")[0].strip()
-                achados[addr] = {"addr": addr, "nome": nome, "mint": mint, "liq": liq, "vol24": vol24, "idade_h": idade_h}
+                achados[addr] = {"addr": addr, "nome": nome, "mint": mint, "liq": liq, "vol24": vol24, "fdv": fdv, "idade_h": idade_h}
             time.sleep(PAUSA_API)
     lista = [
         p for p in achados.values()
         if p["liq"] >= a.min_liq and (p["idade_h"] is None or p["idade_h"] >= a.min_idade_h)
         and p["nome"].upper() not in EXCLUIR_NOMES and p["mint"] not in EXCLUIR_MINTS
+        and (not p["fdv"] or p["fdv"] <= a.max_fdv)  # valor de mercado gigante = não é memecoin
     ]
     lista.sort(key=lambda p: -p["vol24"])
     lista = lista[: a.top]
@@ -209,6 +214,34 @@ def salvar_pool(pasta, pool, novos, cutoff=None):
     return len(candles)
 
 
+def metricas_pool(candles):
+    """Amplitude mediana do candle (máxima sobre mínima) e volume mediano em USD, nos candles mais recentes."""
+    rec = [c for c in candles[-1000:] if c[3] > 0]
+    if len(rec) < 300:
+        return None
+    return {"amp": statistics.median([(c[2] - c[3]) / c[3] for c in rec]),
+            "vol": statistics.median([c[5] for c in rec]), "n": len(rec)}
+
+
+def escolher_pools(metricas, n, amp_min=0.005, vol_min=100.0):
+    """metricas: {addr: dict ou None}. Fica com os n de maior volume mediano entre os que se mexem de verdade.
+    Devolve (escolhidos em ordem de ranking, [(addr, motivo)] dos descartados)."""
+    ok, fora = [], []
+    for addr in sorted(metricas):
+        m = metricas[addr]
+        if m is None:
+            fora.append((addr, "poucos candles"))
+        elif m["amp"] < amp_min:
+            fora.append((addr, "pouco volátil (não parece memecoin)"))
+        elif m["vol"] < vol_min:
+            fora.append((addr, "pouco volume"))
+        else:
+            ok.append(addr)
+    ok.sort(key=lambda ad: (-metricas[ad]["vol"], ad))
+    fora += [(ad, "fora do top %d" % n) for ad in ok[n:]]
+    return ok[:n], fora
+
+
 def cmd_baixar(a):
     pools = ler_json("pools.json", [])
     if not pools:
@@ -221,6 +254,24 @@ def cmd_baixar(a):
             print("%-14s %d candles de %d min" % (pool["nome"], n, a.agg))
         except Exception as e:
             print("%-14s ERRO: %s" % (pool["nome"], e))
+    manter = getattr(a, "manter", 0)
+    if manter:
+        mets = {}
+        for pool in pools:
+            j = ler_json(pasta / ("%s.json" % pool["addr"]), None)
+            mets[pool["addr"]] = metricas_pool(j["candles"]) if j else None
+        escolhidos, fora = escolher_pools(mets, manter)
+        por_addr = {p["addr"]: p for p in pools}
+        for ad in escolhidos:
+            print("  mantida    %-14s amplitude %.2f%% | volume mediano $%s" % (
+                por_addr[ad]["nome"], mets[ad]["amp"] * 100, format(int(mets[ad]["vol"]), ",")))
+        for ad, motivo in fora:
+            print("  descartada %-14s %s" % (por_addr[ad]["nome"], motivo))
+            arq = pasta / ("%s.json" % ad)
+            if arq.exists():
+                arq.unlink()
+        gravar_json("pools.json", [por_addr[ad] for ad in escolhidos])
+        print("%d moedas mantidas em pools.json" % len(escolhidos))
 
 
 def carregar_moedas(pasta):
@@ -882,14 +933,16 @@ def main():
         p.add_argument("--ate", help="último dia do acompanhamento ao vivo (AAAA-MM-DD)")
 
     def desc(p):
-        p.add_argument("--top", type=int, default=5)
+        p.add_argument("--top", type=int, default=20, help="candidatas a baixar; as finais saem de --manter")
         p.add_argument("--paginas", type=int, default=3)
+        p.add_argument("--manter", type=int, default=5, help="quantas moedas ficam depois do filtro por volatilidade")
+        p.add_argument("--max-fdv", dest="max_fdv", type=float, default=2e9)
         p.add_argument("--min-liq", dest="min_liq", type=float, default=30000)
         p.add_argument("--min-idade-h", dest="min_idade_h", type=float, default=72)
 
     p = sub.add_parser("demo"); comuns(p); p.set_defaults(f=cmd_demo)
     p = sub.add_parser("descobrir"); desc(p); p.set_defaults(f=cmd_descobrir)
-    p = sub.add_parser("baixar"); p.add_argument("--paginas", type=int, default=3); p.add_argument("--agg", type=int, default=5, choices=[1, 5, 15]); p.set_defaults(f=cmd_baixar)
+    p = sub.add_parser("baixar"); p.add_argument("--paginas", type=int, default=3); p.add_argument("--agg", type=int, default=5, choices=[1, 5, 15]); p.add_argument("--manter", type=int, default=0, help="depois de baixar, fica só com as N moedas mais ativas e voláteis"); p.set_defaults(f=cmd_baixar)
     p = sub.add_parser("backtest"); comuns(p); p.add_argument("--com-rug", action="store_true"); p.set_defaults(f=cmd_backtest)
     p = sub.add_parser("tudo"); comuns(p); desc(p); p.add_argument("--com-rug", action="store_true"); p.set_defaults(f=cmd_tudo)
     p = sub.add_parser("ao-vivo"); comuns(p); p.add_argument("--intervalo", type=int, default=5, help="minutos entre rodadas"); p.add_argument("--uma-vez", dest="uma_vez", action="store_true", help="faz uma rodada e sai (para agendadores na nuvem)"); p.add_argument("--html", action="store_true", help="também grava relatorio_ao_vivo.html completo"); p.set_defaults(f=cmd_ao_vivo)

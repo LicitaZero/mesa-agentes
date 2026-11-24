@@ -62,11 +62,11 @@ jobs:
         if: steps.gate.outputs.ativo == 'true'
         working-directory: estado
         run: |
-          VERSAO="v2-5ativos-50usd-ate-31dez"
+          VERSAO="v3-memecoins-5ativos-50usd-ate-31dez"
           if [ ! -f pools.json ] || [ "$(cat versao 2>/dev/null)" != "$VERSAO" ] || [ "${{ inputs.redescobrir }}" = "true" ]; then
             rm -rf dados estado.json paper_log.jsonl vivo.json relatorio.html resultado.json ENCERRADO pools.json versao
-            python ../mesa_agentes.py descobrir --top 5
-            python ../mesa_agentes.py baixar --paginas 3
+            python ../mesa_agentes.py descobrir --top 20
+            python ../mesa_agentes.py baixar --paginas 3 --manter 5
             if [ "$(python -c "import json;print(len(json.load(open('pools.json'))))" 2>/dev/null || echo 0)" -lt 1 ]; then
               echo "Nenhuma moeda encontrada; tente rodar de novo mais tarde."
               rm -f pools.json
