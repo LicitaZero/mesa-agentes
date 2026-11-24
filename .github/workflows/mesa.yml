@@ -1,12 +1,15 @@
 name: mesa-agentes
 
+# Um job fica rodando por ~5h45 e faz uma rodada por minuto. Ao terminar, ele mesmo inicia o próximo.
+# O agendamento de 6 em 6 horas só serve de rede de segurança.
+# O acompanhamento termina em 31/12/2026 (23:59 de Brasília). Depois disso o fluxo para sozinho.
 on:
   schedule:
-    - cron: "*/10 * * * *"   # a cada 10 minutos (o GitHub pode atrasar alguns minutos)
+    - cron: "0 */6 * * *"
   workflow_dispatch:
     inputs:
       redescobrir:
-        description: "Buscar de novo a lista de moedas e baixar o histórico"
+        description: "Recomeçar: escolher 5 moedas de novo e zerar a banca simulada"
         type: boolean
         default: false
 
@@ -18,14 +21,18 @@ permissions:
   contents: write
   pages: write
   id-token: write
+  actions: write
 
 jobs:
   rodar:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 355
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FIM_DATA: "2027-01-01 03:00:00"   # 31/12/2026 23:59:59 em Brasília, em UTC
     steps:
       - uses: actions/checkout@v4
 
@@ -41,50 +48,114 @@ jobs:
             git archive FETCH_HEAD | tar -x -C estado
           fi
 
-      - name: Descobrir moedas e baixar histórico (primeira vez ou sob pedido)
-        working-directory: estado
+      - name: Ver se o acompanhamento ainda está valendo
+        id: gate
         run: |
-          if [ ! -f pools.json ] || [ "${{ inputs.redescobrir }}" = "true" ]; then
-            python ../mesa_agentes.py descobrir
-            python ../mesa_agentes.py baixar --paginas 3
+          if [ "$(date -u +%s)" -ge "$(date -u -d "$FIM_DATA" +%s)" ] && [ -f estado/ENCERRADO ]; then
+            echo "Acompanhamento já encerrado."
+            echo "ativo=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ativo=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Paper trading (uma rodada)
+      - name: Escolher 5 moedas e baixar histórico (primeira vez, mudança de versão ou sob pedido)
+        if: steps.gate.outputs.ativo == 'true'
         working-directory: estado
-        run: python ../mesa_agentes.py ao-vivo --uma-vez
-
-      - name: Backtest (uma vez por dia)
-        working-directory: estado
-        continue-on-error: true
         run: |
+          VERSAO="v2-5ativos-50usd-ate-31dez"
+          if [ ! -f pools.json ] || [ "$(cat versao 2>/dev/null)" != "$VERSAO" ] || [ "${{ inputs.redescobrir }}" = "true" ]; then
+            rm -rf dados estado.json paper_log.jsonl vivo.json relatorio.html resultado.json ENCERRADO pools.json versao
+            python ../mesa_agentes.py descobrir --top 5
+            python ../mesa_agentes.py baixar --paginas 3
+            if [ "$(python -c "import json;print(len(json.load(open('pools.json'))))" 2>/dev/null || echo 0)" -lt 1 ]; then
+              echo "Nenhuma moeda encontrada; tente rodar de novo mais tarde."
+              rm -f pools.json
+              exit 1
+            fi
+            echo "$VERSAO" > versao
+          fi
+
+      - name: Primeira rodada e backtest do dia
+        if: steps.gate.outputs.ativo == 'true'
+        working-directory: estado
+        run: |
+          python ../mesa_agentes.py ao-vivo --uma-vez || echo "primeira rodada falhou"
           if [ ! -f relatorio.html ] || [ -n "$(find relatorio.html -mmin +1440)" ]; then
-            python ../mesa_agentes.py backtest
+            python ../mesa_agentes.py backtest || echo "backtest falhou"
           fi
 
       - name: Montar a página
+        if: steps.gate.outputs.ativo == 'true'
         run: |
           mkdir -p site
-          cp estado/relatorio_ao_vivo.html site/index.html
+          python mesa_agentes.py viewer --saida site/index.html
           if [ -f estado/relatorio.html ]; then cp estado/relatorio.html site/backtest.html; fi
 
-      - name: Salvar estado (branch sem histórico)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cd estado
-          rm -f relatorio_ao_vivo.html.tmp
-          git init -q -b estado
-          git config user.name "mesa-bot"
-          git config user.email "mesa-bot@users.noreply.github.com"
-          git add -A
-          git commit -q -m "estado"
-          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/estado
-
       - uses: actions/configure-pages@v5
+        if: steps.gate.outputs.ativo == 'true'
 
       - uses: actions/upload-pages-artifact@v3
+        if: steps.gate.outputs.ativo == 'true'
         with:
           path: site
 
       - id: deploy
+        if: steps.gate.outputs.ativo == 'true'
         uses: actions/deploy-pages@v4
+
+      - name: Loop de 1 minuto
+        if: steps.gate.outputs.ativo == 'true'
+        run: |
+          REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          VIVO="$RUNNER_TEMP/vivo"
+          mkdir -p "$VIVO" && cd "$VIVO"
+          git init -q -b vivo
+          git config user.name "mesa-bot"
+          git config user.email "mesa-bot@users.noreply.github.com"
+          cd "$GITHUB_WORKSPACE/estado"
+
+          salvar_estado() {
+            rm -rf .git
+            git init -q -b estado
+            git config user.name "mesa-bot"
+            git config user.email "mesa-bot@users.noreply.github.com"
+            git add -A
+            git commit -q -m "estado"
+            git push -q -f "$REPO_URL" HEAD:refs/heads/estado || echo "aviso: não consegui salvar o estado"
+            rm -rf .git
+          }
+
+          agora=$(date +%s)
+          fim_data=$(date -u -d "$FIM_DATA" +%s)
+          fim=$(( agora + 345*60 ))
+          # uma rodada depois do fim do período, para fechar posições e gravar o resultado final
+          limite=$(( fim_data + 120 ))
+          [ "$fim" -gt "$limite" ] && fim=$limite
+          ultimo_estado=$agora
+          while [ "$(date +%s)" -lt "$fim" ]; do
+            t0=$(date +%s)
+            python ../mesa_agentes.py ao-vivo --uma-vez || echo "rodada falhou; tento de novo no próximo minuto"
+            if [ -f vivo.json ]; then
+              cp vivo.json "$VIVO/vivo.json"
+              (cd "$VIVO" && git add -A \
+                && { git commit -q --amend --allow-empty -m v 2>/dev/null || git commit -q --allow-empty -m v; } \
+                && git push -q -f "$REPO_URL" HEAD:refs/heads/vivo) || echo "aviso: não consegui publicar o vivo.json"
+            fi
+            [ -f ENCERRADO ] && break
+            if [ $(( t0 - ultimo_estado )) -ge 1800 ]; then
+              salvar_estado
+              ultimo_estado=$t0
+            fi
+            resto=$(( 60 - ( $(date +%s) - t0 ) ))
+            [ "$resto" -gt 0 ] && sleep "$resto"
+          done
+          salvar_estado
+
+      - name: Iniciar o próximo ciclo
+        if: always() && steps.gate.outputs.ativo == 'true'
+        run: |
+          if [ "$(date -u +%s)" -ge "$(date -u -d "$FIM_DATA" +%s)" ]; then
+            echo "Período encerrado; não inicio outro ciclo."
+            exit 0
+          fi
+          gh workflow run mesa.yml --ref "${GITHUB_REF_NAME}" || echo "não consegui reiniciar; o agendamento de 6 em 6 horas retoma"

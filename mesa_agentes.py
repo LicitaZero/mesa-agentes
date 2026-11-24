@@ -25,22 +25,30 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 GT = "https://api.geckoterminal.com/api/v2"
 RUG = "https://api.rugcheck.xyz/v1"
 PAUSA_API = 2.3  # segundos entre chamadas; a API gratuita aceita cerca de 30 por minuto
+# pools de SOL e stablecoins não entram: o teste é de memecoins
+EXCLUIR_NOMES = {"SOL", "WSOL", "USDC", "USDT", "USDS", "PYUSD"}
+EXCLUIR_MINTS = {
+    "So11111111111111111111111111111111111111112",
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+}
 
 CFG = {
-    "capital": 1000.0,   # dinheiro fictício inicial (USD)
-    "tamanho": 0.02,     # Sizer: fração do patrimônio por entrada
+    "capital": 50.0,     # banca fictícia inicial (USD)
+    "tamanho": 0.20,     # Sizer: fração do patrimônio por entrada (20% de $50 = $10)
+    "fim_data": "2026-12-31",  # último dia do acompanhamento ao vivo (horário de Brasília)
     "slip": 0.015,       # Executor: derrapagem em cada lado (1,5%)
     "taxa": 0.0025,      # Executor: taxa de swap em cada lado
     "stop": 0.12,        # Stop Guard: perda máxima em relação à entrada
     "tp1": 0.30,         # TP Ladder: vende metade com +30%
     "tp2": 0.60,         # TP Ladder: vende o resto com +60%
-    "max_pos": 3,        # posições abertas ao mesmo tempo
+    "max_pos": 5,        # posições abertas ao mesmo tempo
     "espera": 5,         # candles de pausa depois de uma saída
     "vol_mult": 3.0,     # sinal de volume: volume >= 3x a mediana recente
     "jan_vol": 30,       # janela da mediana de volume
@@ -60,6 +68,19 @@ def agora():
 
 def fmt_ts(ts):
     return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+
+BRT = timezone(timedelta(hours=-3))
+
+
+def ts_fim(dia):
+    """Último segundo do dia (AAAA-MM-DD) no horário de Brasília, em epoch UTC."""
+    d = datetime.strptime(dia, "%Y-%m-%d").replace(tzinfo=BRT) + timedelta(days=1)
+    return int(d.timestamp()) - 1
+
+
+def fmt_dia(ts):
+    return datetime.fromtimestamp(ts, BRT).strftime("%d/%m")
 
 
 def http_get(url, tentativas=4):
@@ -137,6 +158,7 @@ def cmd_descobrir(a):
     lista = [
         p for p in achados.values()
         if p["liq"] >= a.min_liq and (p["idade_h"] is None or p["idade_h"] >= a.min_idade_h)
+        and p["nome"].upper() not in EXCLUIR_NOMES and p["mint"] not in EXCLUIR_MINTS
     ]
     lista.sort(key=lambda p: -p["vol24"])
     lista = lista[: a.top]
@@ -401,7 +423,8 @@ def estatisticas(res, cfg):
 def cfg_dos_args(a):
     cfg = dict(CFG)
     mapa = {"capital": "capital", "tamanho": "tamanho", "stop": "stop", "tp1": "tp1", "tp2": "tp2",
-            "slip": "slip", "max_pos": "max_pos", "min_sinais": "min_sinais", "agg": "agg"}
+            "slip": "slip", "max_pos": "max_pos", "min_sinais": "min_sinais", "agg": "agg",
+            "ate": "fim_data"}
     for arg, chave in mapa.items():
         v = getattr(a, arg, None)
         if v is not None:
@@ -466,21 +489,43 @@ def agentes_moeda(m, cfg, res, st):
     return {"agentes": A, "veredito": {"r": ver[0], "p": ver[1], "go": ver[2]}}
 
 
-def gerar_relatorio(res, st, cfg, caminho, modo, avisos):
+def separar_viva(moedas, agg):
+    """Tira da simulação o candle ainda em formação (senão sinais aparecem e somem quando ele fecha)
+    e guarda esse candle só para o gráfico."""
+    limite = agora() - agg * 60
+    for m in moedas:
+        m["c_viva"] = None
+        if m["c"] and m["c"][-1][0] > limite:
+            m["c_viva"] = m["c"].pop()
+
+
+def _candles_grafico(m, max_candles):
+    c = m["c"] + ([m["c_viva"]] if m.get("c_viva") else [])
+    return c[-max_candles:] if max_candles else c
+
+
+def gerar_relatorio(res, st, cfg, caminho, modo, avisos, json_path=None, max_candles=None):
     passo = max(1, math.ceil(len(res["curva"]) / 600))
     curva = res["curva"][::passo]
     if res["curva"] and curva[-1] != res["curva"][-1]:
         curva.append(res["curva"][-1])
     dados = {
         "modo": modo, "gerado": fmt_ts(agora()), "cfg": cfg, "stats": st, "avisos": avisos,
-        "moedas": [dict({"nome": m["nome"], "c": m["c"]}, **agentes_moeda(m, cfg, res, st)) for m in res["moedas"]],
+        "moedas": [dict({"nome": m["nome"], "c": _candles_grafico(m, max_candles)}, **agentes_moeda(m, cfg, res, st))
+                   for m in res["moedas"]],
         "trades": res["trades"], "marks": res["marks"], "curva": curva,
         "abertas": res["abertas"], "pendentes": res["pendentes"],
     }
     js = json.dumps(dados, ensure_ascii=False).replace("</", "<\\/")
-    with open(caminho, "w", encoding="utf-8") as f:
-        f.write(MODELO.replace("__DADOS__", js))
-    print("Relatório salvo em %s" % caminho)
+    if caminho:
+        with open(caminho, "w", encoding="utf-8") as f:
+            f.write(MODELO.replace("__DADOS__", js))
+        print("Relatório salvo em %s" % caminho)
+    if json_path:
+        tmp = str(json_path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(dados, ensure_ascii=False, separators=(",", ":")))
+        os.replace(tmp, json_path)
 
 
 MODELO = r"""<!doctype html>
@@ -562,7 +607,7 @@ function drawEq(){
  g.strokeStyle=v[v.length-1]>=D.cfg.capital?cs('--good'):cs('--bad');g.lineWidth=1.6;g.beginPath();
  D.curva.forEach((p,i)=>{const x=X(p[0]),y=Y(p[1]);i?g.lineTo(x,y):g.moveTo(x,y)});g.stroke();
  g.fillStyle=cs('--muted');g.font='11px ui-monospace,monospace';g.textBaseline='middle';
- g.fillText('$'+fm(hi,0),W-56,Y(hi)+4);g.fillText('$'+fm(lo,0),W-56,Y(lo)-4);
+ g.fillText('$'+fm(hi,2),W-56,Y(hi)+4);g.fillText('$'+fm(lo,2),W-56,Y(lo)-4);
 }
 function tabs(){
  $('#tabs').innerHTML=D.moedas.map((m,i)=>{const n=D.trades.filter(t=>t.m===m.nome).length;return '<button class="tab" data-i="'+i+'" aria-pressed="'+(i===cur)+'">'+m.nome+' <span class="mute mono">'+n+'</span></button>'}).join('');
@@ -588,7 +633,7 @@ function drawCv(){
   g.beginPath();g.moveTo(x,y(d[2]));g.lineTo(x,y(d[3]));g.stroke();
   g.fillRect(x-bw/2,y(Math.max(d[1],d[4])),bw,Math.max(1,Math.abs(y(d[1])-y(d[4]))));
   g.globalAlpha=.35;const vh=d[5]/vm*(VH-6);g.fillRect(x-bw/2,H-vh,bw,vh);g.globalAlpha=1});
- const xo=ts=>{const i=idxOf(c,ts)-a;return i<0||i>=data.length?null:i*step+step/2};
+ const xo=ts=>{if(ts<c[0][0])return null;const i=idxOf(c,ts)-a;return i<0||i>=data.length?null:i*step+step/2};
  D.trades.filter(t=>t.m===m.nome).forEach(t=>{const x0=xo(t.ts0),x1=xo(t.ts1);if(x0==null&&x1==null)return;
   g.strokeStyle=t.pnl>=0?up:dn;g.globalAlpha=.7;g.setLineDash([4,3]);g.beginPath();g.moveTo(x0==null?0:x0,y(t.px0));g.lineTo(x1==null?pw:x1,y(t.px1));g.stroke();g.setLineDash([]);g.globalAlpha=1});
  D.marks.filter(k=>k.m===m.nome).forEach(k=>{const x=xo(k.ts);if(x==null)return;const yy=y(k.px),s=6;
@@ -682,13 +727,23 @@ def cmd_ao_vivo(a):
                 salvar_pool(Path("dados"), pool, baixar_candles(pool["addr"], 1, cfg["agg"]), cutoff)
             except Exception as e:
                 print("aviso: %s: %s" % (pool["nome"], e))
-        moedas = carregar_moedas("dados")
+        enderecos = {p["addr"] for p in pools}
+        moedas = [m for m in carregar_moedas("dados") if m["addr"] in enderecos]
         for m in moedas:
             m["rug_ok"] = checar_rug(m["mint"], cache)
             m["rug_checado"] = True
         Path("dados").mkdir(exist_ok=True)
         gravar_json("dados/rug.json", cache)
-        res = simular(moedas, cfg, inicio_ts=est["inicio"], fechar_fim=False)
+        fim_ts = ts_fim(cfg["fim_data"])
+        encerrado = agora() > fim_ts
+        for m in moedas:
+            m["c"] = [r for r in m["c"] if r[0] <= fim_ts]
+        if encerrado:
+            for m in moedas:
+                m["c_viva"] = None
+        else:
+            separar_viva(moedas, cfg["agg"])
+        res = simular(moedas, cfg, inicio_ts=est["inicio"], fechar_fim=encerrado)
         st = estatisticas(res, cfg)
         for k in res["marks"]:
             if k["ts"] < est["inicio"]:
@@ -701,8 +756,19 @@ def cmd_ao_vivo(a):
                     f.write(json.dumps(k, ensure_ascii=False) + "\n")
         est["vistos"] = sorted(vistos)
         gravar_json("estado.json", est)
-        avisos = list(AVISOS_BASE) + ["Modo ao vivo: o relatório mostra a simulação desde o início da execução; o que vem antes só serve de histórico para os indicadores."]
-        gerar_relatorio(res, st, cfg, "relatorio_ao_vivo.html", "AO VIVO · DADOS REAIS · DINHEIRO SIMULADO", avisos)
+        avisos = list(AVISOS_BASE) + [
+            "Modo ao vivo: a simulação conta desde %s; o que vem antes só serve de histórico para os indicadores." % fmt_dia(est["inicio"]),
+            "Cada posição simulada é de %.0f%% da banca ($%.2f). Numa operação real com valores pequenos assim, taxas fixas de rede e a derrapagem de pools pequenos pesam bem mais do que no modelo." % (cfg["tamanho"] * 100, cfg["capital"] * cfg["tamanho"]),
+            "As decisões acontecem quando cada candle de %d minutos fecha. A página atualiza a cada minuto, mas o candle em formação só aparece no gráfico." % cfg["agg"],
+        ]
+        modo = "%s · %s A %s · BANCA SIMULADA $%.0f · DADOS REAIS" % (
+            "ENCERRADO" if encerrado else "AO VIVO", fmt_dia(est["inicio"]), fmt_dia(fim_ts), cfg["capital"])
+        gerar_relatorio(res, st, cfg, "relatorio_ao_vivo.html" if a.html else None,
+                        modo, avisos, json_path="vivo.json", max_candles=700)
+        if encerrado:
+            Path("ENCERRADO").write_text("acompanhamento encerrado em %s UTC\n" % fmt_ts(agora()))
+            print("Acompanhamento encerrado. Resultado final: $%.2f (%+.2f%%)" % (st["eq_final"], st["retorno_pct"]))
+            return
         if a.uma_vez:
             print("Patrimônio simulado: $%.2f | abertas: %d" % (st["eq_final"], len(res["abertas"])))
             return
@@ -750,6 +816,50 @@ def cmd_demo(a):
     gravar_json("resultado_demo.json", {"stats": st, "trades": res["trades"], "cfg": cfg})
 
 
+# ---------------------------------------------------------------- página ao vivo
+def modelo_vivo():
+    """Mesma página do relatório, mas buscando o vivo.json (branch 'vivo' do próprio repositório) a cada minuto."""
+    t = MODELO.replace("const D=__DADOS__;", "let D=null;")
+    ini = t.index("head();tabs();trades();")
+    fim = t.index("</script></body></html>")
+    novo = r"""let primeiro=true,carregando=false;
+function aplicar(novo){
+ if(!novo.moedas||!novo.moedas.length){$('#gerado').textContent='sem moedas ainda';return}
+ const seguindo=primeiro||(D&&start>=view().max);
+ const nome=D&&D.moedas[cur]?D.moedas[cur].nome:null;
+ D=novo;
+ const i=nome?D.moedas.findIndex(m=>m.nome===nome):-1;cur=i>=0?i:0;
+ if(seguindo)start=1e9;
+ head();
+ $('#split').textContent='';
+ const kb=$('#kpis').lastElementChild;if(kb&&kb.textContent.includes('Comprar e segurar'))kb.remove();
+ tabs();trades();drawEq();drawCv();primeiro=false;
+}
+async function buscar(){
+ if(carregando)return;carregando=true;
+ try{
+  const u=location.hostname.split('.')[0],r=location.pathname.split('/')[1]||'';
+  const resp=await fetch('https://raw.githubusercontent.com/'+u+'/'+r+'/vivo/vivo.json?t='+Date.now(),{cache:'no-store'});
+  if(!resp.ok)throw new Error('HTTP '+resp.status);
+  aplicar(await resp.json());
+  $('#gerado').textContent+=' · verificado '+new Date().toLocaleTimeString('pt-BR');
+ }catch(e){
+  $('#gerado').textContent=D?('sem resposta agora ('+e.message+'); mostrando os últimos dados'):('aguardando a primeira rodada ('+e.message+')');
+ }
+ carregando=false;
+}
+buscar();setInterval(buscar,60000);
+"""
+    return t[:ini] + novo + t[fim:]
+
+
+def cmd_viewer(a):
+    Path(a.saida).parent.mkdir(parents=True, exist_ok=True)
+    with open(a.saida, "w", encoding="utf-8") as f:
+        f.write(modelo_vivo())
+    print("Página ao vivo salva em %s" % a.saida)
+
+
 # ---------------------------------------------------------------- main
 def main():
     try:
@@ -769,9 +879,10 @@ def main():
         p.add_argument("--max-pos", dest="max_pos", type=int)
         p.add_argument("--min-sinais", dest="min_sinais", type=int)
         p.add_argument("--agg", type=int, choices=[1, 5, 15], help="minutos por candle")
+        p.add_argument("--ate", help="último dia do acompanhamento ao vivo (AAAA-MM-DD)")
 
     def desc(p):
-        p.add_argument("--top", type=int, default=15)
+        p.add_argument("--top", type=int, default=5)
         p.add_argument("--paginas", type=int, default=3)
         p.add_argument("--min-liq", dest="min_liq", type=float, default=30000)
         p.add_argument("--min-idade-h", dest="min_idade_h", type=float, default=72)
@@ -781,7 +892,9 @@ def main():
     p = sub.add_parser("baixar"); p.add_argument("--paginas", type=int, default=3); p.add_argument("--agg", type=int, default=5, choices=[1, 5, 15]); p.set_defaults(f=cmd_baixar)
     p = sub.add_parser("backtest"); comuns(p); p.add_argument("--com-rug", action="store_true"); p.set_defaults(f=cmd_backtest)
     p = sub.add_parser("tudo"); comuns(p); desc(p); p.add_argument("--com-rug", action="store_true"); p.set_defaults(f=cmd_tudo)
-    p = sub.add_parser("ao-vivo"); comuns(p); p.add_argument("--intervalo", type=int, default=5, help="minutos entre rodadas"); p.add_argument("--uma-vez", dest="uma_vez", action="store_true", help="faz uma rodada e sai (para agendadores na nuvem)"); p.set_defaults(f=cmd_ao_vivo)
+    p = sub.add_parser("ao-vivo"); comuns(p); p.add_argument("--intervalo", type=int, default=5, help="minutos entre rodadas"); p.add_argument("--uma-vez", dest="uma_vez", action="store_true", help="faz uma rodada e sai (para agendadores na nuvem)"); p.add_argument("--html", action="store_true", help="também grava relatorio_ao_vivo.html completo"); p.set_defaults(f=cmd_ao_vivo)
+
+    p = sub.add_parser("viewer"); p.add_argument("--saida", default="site/index.html"); p.set_defaults(f=cmd_viewer)
 
     a = ap.parse_args()
     if a.cmd == "tudo":
