@@ -1,0 +1,90 @@
+name: mesa-agentes
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # a cada 10 minutos (o GitHub pode atrasar alguns minutos)
+  workflow_dispatch:
+    inputs:
+      redescobrir:
+        description: "Buscar de novo a lista de moedas e baixar o histórico"
+        type: boolean
+        default: false
+
+concurrency:
+  group: mesa
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  rodar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restaurar estado
+        run: |
+          mkdir -p estado
+          if git ls-remote --exit-code --heads origin estado >/dev/null 2>&1; then
+            git fetch --depth=1 origin estado
+            git archive FETCH_HEAD | tar -x -C estado
+          fi
+
+      - name: Descobrir moedas e baixar histórico (primeira vez ou sob pedido)
+        working-directory: estado
+        run: |
+          if [ ! -f pools.json ] || [ "${{ inputs.redescobrir }}" = "true" ]; then
+            python ../mesa_agentes.py descobrir
+            python ../mesa_agentes.py baixar --paginas 3
+          fi
+
+      - name: Paper trading (uma rodada)
+        working-directory: estado
+        run: python ../mesa_agentes.py ao-vivo --uma-vez
+
+      - name: Backtest (uma vez por dia)
+        working-directory: estado
+        continue-on-error: true
+        run: |
+          if [ ! -f relatorio.html ] || [ -n "$(find relatorio.html -mmin +1440)" ]; then
+            python ../mesa_agentes.py backtest
+          fi
+
+      - name: Montar a página
+        run: |
+          mkdir -p site
+          cp estado/relatorio_ao_vivo.html site/index.html
+          if [ -f estado/relatorio.html ]; then cp estado/relatorio.html site/backtest.html; fi
+
+      - name: Salvar estado (branch sem histórico)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd estado
+          rm -f relatorio_ao_vivo.html.tmp
+          git init -q -b estado
+          git config user.name "mesa-bot"
+          git config user.email "mesa-bot@users.noreply.github.com"
+          git add -A
+          git commit -q -m "estado"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/estado
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
