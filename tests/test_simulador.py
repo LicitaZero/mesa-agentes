@@ -106,7 +106,7 @@ class TestSimular(unittest.TestCase):
         self.assertEqual(len(res["trades"]), 1)
         t = res["trades"][0]
         compra = [x for x in res["marks"] if x["tipo"] == "compra"]
-        self.assertEqual(compra, [{"m": "$TESTE", "ts": T0 + 7 * PASSO, "tipo": "compra", "px": 1.05}])
+        self.assertEqual(compra, [{"m": "$TESTE", "ts": T0 + 7 * PASSO, "tipo": "compra", "px": 1.05, "custo": 10.0}])
         self.assertEqual(t["ts0"], T0 + 7 * PASSO)  # candle seguinte ao sinal (índice 6)
         self.assertEqual(t["px0"], 1.05)            # abertura do candle 7, não o fechamento 1.1 do sinal
         self.assertEqual(t["sinais"], ["volume", "rompimento"])
@@ -114,6 +114,27 @@ class TestSimular(unittest.TestCase):
         self.assertAlmostEqual(t["custo"], 10.0, places=12)  # 20% de $50
         self.assertAlmostEqual(t["pnl"], -0.343967667039, places=9)  # só custos de ida e volta
         self.assertAlmostEqual(res["curva"][-1][1], 49.656, places=4)
+
+    def test_rug_atual_nao_reescreve_parecer_anterior(self):
+        moeda = serie([PLANO] * 4)
+        moeda["rug_por_candle"] = {str(T0 + 6 * PASSO): True}
+        moeda["rug_ok"] = False
+        resultado = ma.simular([moeda], cfg_teste())
+        self.assertEqual(resultado["trades"][0]["ts0"], T0 + 7 * PASSO)
+
+    def test_parecer_ausente_bloqueia_sinal_ao_vivo(self):
+        moeda = serie([PLANO] * 4)
+        moeda["rug_por_candle"] = {}
+        resultado = ma.simular([moeda], cfg_teste())
+        self.assertEqual(resultado["trades"], [])
+
+    def test_candle_em_formacao_fica_fora_do_motor(self):
+        moeda = serie([PLANO] * 3)
+        ultimo = moeda["c"][-1]
+        with mock.patch.object(ma, "agora", return_value=ultimo[0] + 30):
+            ma.separar_viva([moeda], 5)
+        self.assertEqual(moeda["c_viva"], ultimo)
+        self.assertNotIn(ultimo, moeda["c"])
 
     def test_sinal_sem_candle_seguinte_fica_pendente(self):
         cfg = cfg_teste()
