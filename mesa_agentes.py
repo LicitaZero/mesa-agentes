@@ -366,7 +366,8 @@ def simular(moedas, cfg, inicio_ts=None, fechar_fim=True):
             vender(p, p["frac"], ultimo[k], ultimo_ts, len(moedas[k]["c"]) - 1, "fim")
         else:
             abertas.append({"m": moedas[k]["nome"], "ts0": p["ts0"], "px0": p["ref"], "px": ultimo[k],
-                            "pct": (ultimo[k] / p["entrada"] - 1) * 100, "stop": p["stop"], "tp1": p["tp1"]})
+                            "pct": (ultimo[k] / p["entrada"] - 1) * 100, "stop": p["stop"], "tp1": p["tp1"],
+                            "custo": round(p["custo"] * p["frac"], 4), "frac": p["frac"]})
     if curva:
         # patrimônio final já depois dos custos de saída (fechar_fim) ou marcado a mercado (ao vivo)
         curva[-1][1] = round(estado["cash"] + sum(valor(q) for q in pos.values()), 4)
@@ -449,7 +450,10 @@ def resumo_terminal(st, cfg):
 
 # ---------------------------------------------------------------- relatório HTML
 def _preco(p):
-    return ("%.10f" % p).rstrip("0").rstrip(".")
+    """Preço com casas suficientes para ler (mesma regra do relatório): 87.66 ou 0.00003759."""
+    if not p or p <= 0:
+        return "0"
+    return "%.*f" % (min(12, max(2, 3 - math.floor(math.log10(p)))), p)
 
 
 def agentes_moeda(m, cfg, res, st):
@@ -557,23 +561,47 @@ th{text-align:left;color:var(--muted);font-weight:500;padding:6px 8px;border-bot
 td{padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}tr.lk{cursor:pointer}tr.lk:hover{background:var(--surface2)}
 ul{margin:0;padding-left:18px;color:var(--muted)}li{margin:3px 0}
 .leg{display:flex;flex-wrap:wrap;gap:12px;font-size:.78rem;color:var(--muted)}
-.hub{display:flex;align-items:center;gap:16px;background:var(--surface2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:8px 0}
-.ring{flex:0 0 auto;width:60px;height:60px;border-radius:50%;border:2px solid var(--accent);display:grid;place-items:center;box-shadow:0 0 0 5px var(--surface),0 0 18px rgba(255,122,69,.35);font:.62rem/1.2 ui-monospace,monospace;text-align:center}
-.verdict{font-size:1.1rem;font-weight:700}
-.agents{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-bottom:10px}
-.agent{background:var(--surface2);border:1px solid var(--line);border-left:3px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}
-.agent.ok{border-left-color:var(--good)}.agent.warn{border-left-color:var(--warn)}.agent.bad{border-left-color:var(--bad)}
-.agent .n{font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}.agent .t{font-size:.78rem;margin-top:2px;overflow-wrap:anywhere}
+[hidden]{display:none!important}
+.orbit{position:relative;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));grid-template-rows:repeat(4,auto);gap:12px 14px;align-items:center;margin:10px 0 12px;padding:16px;border:1px solid var(--line);border-radius:14px;background:radial-gradient(ellipse at 50% 42%,#2a181b 0%,var(--surface) 68%)}
+.orbit svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
+.core{position:relative;z-index:1;grid-column:3/5;grid-row:1/4;justify-self:center;width:min(210px,100%);aspect-ratio:1;border-radius:50%;border:2px solid var(--accent);background:radial-gradient(circle,#2b191c,#150e10);box-shadow:0 0 0 8px rgba(255,122,69,.07),0 0 42px rgba(255,122,69,.25);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;text-align:center;padding:14px}
+.core.go{border-color:var(--good);box-shadow:0 0 0 8px rgba(74,222,128,.07),0 0 42px rgba(74,222,128,.25)}
+.core .cl{font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.core .cn{font-size:.9rem}
+.core .cp{font-size:.7rem;color:var(--muted);line-height:1.25;max-width:150px}
+.verdict{font-size:1.15rem;font-weight:700}
+.node{position:relative;z-index:1;display:flex;align-items:center;gap:10px;min-width:0;padding:8px 10px;background:var(--surface2);border:1px solid var(--line);border-radius:10px}
+.node .ico{flex:0 0 28px;height:28px;border-radius:8px;display:grid;place-items:center;font:700 .72rem ui-monospace,monospace;color:#140d0f;background:var(--muted)}
+.node.ok .ico{background:var(--good)}.node.warn .ico{background:var(--warn)}.node.bad .ico{background:var(--bad)}
+.node .tx{display:flex;flex-direction:column;min-width:0}
+.node .n{font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.node .t{font-size:.76rem;overflow-wrap:anywhere}
+.l1{grid-column:1/3;grid-row:1}.l2{grid-column:1/3;grid-row:2}.l3{grid-column:1/3;grid-row:3}
+.r1{grid-column:5/7;grid-row:1}.r2{grid-column:5/7;grid-row:2}.r3{grid-column:5/7;grid-row:3}
+.b1{grid-column:2/4;grid-row:4}.b2{grid-column:4/6;grid-row:4}
+@media (max-width:760px){.orbit{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:none}.orbit svg{display:none}.core{grid-column:1/3;grid-row:auto}.node{grid-column:auto!important;grid-row:auto!important}}
+.av{flex:0 0 22px;height:22px;border-radius:50%;display:inline-grid;place-items:center;font:700 .72rem system-ui,sans-serif;color:#140d0f}
+.tab{display:inline-flex;align-items:center;gap:8px}
+.tab .dot{width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.chead{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:6px 12px;margin:8px 0}
+.cid{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-width:0}
+.ohlc{font-size:.76rem;color:var(--muted)}
+.chip{font-size:.68rem;letter-spacing:.08em;padding:3px 8px;border:1px solid var(--line);border-radius:999px;color:var(--muted)}
+.chip.on{border-color:var(--accent);color:var(--accent)}
+.cwrap{position:relative}
+.posbox{position:absolute;left:8px;top:8px;z-index:2;padding:6px 10px;border:1px solid var(--accent);border-radius:8px;background:rgba(21,14,16,.88);pointer-events:none}
+.posbox .pv{font-size:1.25rem;font-weight:700}.posbox small{font-size:.75rem;font-weight:500}
 </style></head><body>
 <div class="top"><h1>Mesa de Agentes</h1><span class="badge" id="modo"></span><span class="mute mono" id="gerado"></span></div>
 <div class="panel"><div class="kpis" id="kpis"></div></div>
 <div class="panel"><h2>Patrimônio simulado</h2><canvas id="eq"></canvas>
 <div class="mute" id="split" style="margin-top:8px"></div></div>
 <div class="panel"><h2>Entradas e saídas por moeda</h2><div class="tabs" id="tabs"></div>
-<div class="hub" id="hub"></div><div class="agents" id="agents"></div>
+<div class="orbit" id="orbit"></div>
 <div class="ctl"><label>Janela <select id="zoom"><option value="100">100 candles</option><option value="250" selected>250 candles</option><option value="600">600 candles</option><option value="0">tudo</option></select></label>
 <input id="pos" type="range" min="0" max="1000" value="1000" aria-label="Posição no tempo"></div>
-<canvas id="cv"></canvas>
+<div class="chead" id="chead"></div>
+<div class="cwrap"><canvas id="cv"></canvas><div class="posbox" id="posbox" hidden></div></div>
 <div class="leg"><span><span style="color:var(--accent)">&#9650;</span> compra</span><span><span class="up">&#9660;</span> venda em TP</span><span><span class="down">&#9660;</span> stop</span><span><span class="mute">&#9660;</span> saída por tempo ou fim</span></div></div>
 <div class="panel"><h2>Posições abertas e ordens pendentes</h2><div id="abertas"></div></div>
 <div class="panel"><h2>Operações (toque numa linha para ver no gráfico)</h2><div class="wrapt"><table id="tb"></table></div></div>
@@ -609,14 +637,42 @@ function drawEq(){
  g.fillStyle=cs('--muted');g.font='11px ui-monospace,monospace';g.textBaseline='middle';
  g.fillText('$'+fm(hi,2),W-56,Y(hi)+4);g.fillText('$'+fm(lo,2),W-56,Y(lo)-4);
 }
+function chg(m){const c=m.c;if(!c.length)return 0;const i=Math.max(0,c.length-289);return (c[c.length-1][4]/c[i][1]-1)*100}
+function hcor(s){let h=0;for(const ch of s)h=(h*31+ch.charCodeAt(0))%360;return 'hsl('+h+',65%,58%)'}
+function ini(s){return (s.replace(/[^A-Za-z0-9]/g,'').charAt(0)||'?').toUpperCase()}
+const POS={'Stop Guard':'l1','TP Ladder':'l2','Executor':'l3','Volume':'r1','Rompimento':'r2','Pressão':'r3','Sizer':'b1','Rug Gate':'b2'};
+const ICO={'Stop Guard':'SG','TP Ladder':'TP','Executor':'EX','Volume':'VO','Rompimento':'RO','Pressão':'PR','Sizer':'SZ','Rug Gate':'RG'};
 function tabs(){
- $('#tabs').innerHTML=D.moedas.map((m,i)=>{const n=D.trades.filter(t=>t.m===m.nome).length;return '<button class="tab" data-i="'+i+'" aria-pressed="'+(i===cur)+'">'+m.nome+' <span class="mute mono">'+n+'</span></button>'}).join('');
- agentes();
+ $('#tabs').innerHTML=D.moedas.map((m,i)=>{const ch=chg(m),n=D.trades.filter(t=>t.m===m.nome).length,ab=D.abertas.some(x=>x.m===m.nome);
+  return '<button class="tab" data-i="'+i+'" aria-pressed="'+(i===cur)+'" title="'+n+' operações fechadas"><span class="av" style="background:'+hcor(m.nome)+'">'+ini(m.nome)+'</span><b>'+m.nome+'</b><span class="mono '+(ch>=0?'up':'down')+'">'+(ch>=0?'+':'')+fm(ch,0)+'%</span>'+(ab?'<span class="dot" title="posição aberta"></span>':'')+'</button>'}).join('');
+ agentes();cabeca();
 }
 function agentes(){
  const m=D.moedas[cur],v=m.veredito;
- $('#hub').innerHTML='<div class="ring" style="'+(v.go?'border-color:var(--good)':'')+'">CÉREBRO<br>regras</div><div><div class="mute mono">'+m.nome+' · último candle</div><div class="verdict" style="color:'+(v.go?'var(--good)':v.r==='Bloqueado'?'var(--bad)':'var(--fg)')+'">'+v.r+'</div><div class="mute">'+v.p+'</div></div>';
- $('#agents').innerHTML=m.agentes.map(a=>'<div class="agent '+a.s+'"><div class="n">'+a.n+'</div><div class="t mono">'+a.t+'</div></div>').join('');
+ const cor=v.go?'var(--good)':v.r==='Bloqueado'?'var(--bad)':'var(--fg)';
+ const nos=m.agentes.map(a=>'<div class="node '+a.s+' '+(POS[a.n]||'')+'"><span class="ico">'+(ICO[a.n]||'·')+'</span><span class="tx"><span class="n">'+a.n+'</span><span class="t mono">'+a.t+'</span></span></div>').join('');
+ $('#orbit').innerHTML='<svg id="links" aria-hidden="true"></svg><div class="core'+(v.go?' go':'')+'"><div class="cl">cérebro · regras</div><div class="cn mono">'+m.nome+'</div><div class="verdict" style="color:'+cor+'">'+v.r+'</div><div class="cp">'+v.p+'</div></div>'+nos;
+ linhas();
+}
+function linhas(){
+ const o=$('#orbit'),s=$('#links');if(!o||!s)return;const core=o.querySelector('.core');if(!core)return;
+ const R=o.getBoundingClientRect();s.setAttribute('viewBox','0 0 '+R.width+' '+R.height);
+ const cr=core.getBoundingClientRect(),cx=cr.left-R.left+cr.width/2,cy=cr.top-R.top+cr.height/2;
+ const col={ok:cs('--good'),warn:cs('--warn'),bad:cs('--bad'),idle:cs('--muted')};let h='';
+ o.querySelectorAll('.node').forEach(n=>{const r=n.getBoundingClientRect(),x=r.left-R.left+r.width/2,y=r.top-R.top+r.height/2;
+  const st=['ok','warn','bad','idle'].find(k=>n.classList.contains(k))||'idle';
+  h+='<line x1="'+cx+'" y1="'+cy+'" x2="'+x+'" y2="'+y+'" stroke="'+col[st]+'" stroke-opacity=".55" stroke-width="1.2"/><circle cx="'+x+'" cy="'+y+'" r="3" fill="'+col[st]+'"/>'});
+ s.innerHTML=h;
+}
+function cabeca(){
+ const m=D.moedas[cur],c=m.c,u=c[c.length-1],pa=D.abertas.find(x=>x.m===m.nome),ch=chg(m);
+ $('#chead').innerHTML='<div class="cid"><span class="av" style="background:'+hcor(m.nome)+'">'+ini(m.nome)+'</span><b>'+m.nome+'</b><span class="mute mono">5m</span>'
+  +(u?'<span class="mono ohlc">O '+fp(u[1])+' H '+fp(u[2])+' L '+fp(u[3])+' C '+fp(u[4])+' <span class="'+(ch>=0?'up':'down')+'">'+(ch>=0?'+':'')+fm(ch,1)+'%</span></span>':'')+'</div>'
+  +'<span class="chip'+(pa?' on':'')+'">SPOT · '+(pa?'EM POSIÇÃO':'SEM POSIÇÃO')+'</span>';
+ const pb=$('#posbox');
+ if(pa){const cu=pa.custo||0,val=cu*pa.pct/100;pb.hidden=false;
+  pb.innerHTML='<div class="mono mute">SPOT · '+m.nome+' · $'+fm(cu,2)+' em jogo</div><div class="pv mono '+(val>=0?'up':'down')+'">'+(val>=0?'+':'-')+'$'+fm(Math.abs(val))+' <small>'+(pa.pct>=0?'+':'')+fm(pa.pct,1)+'%</small></div>'}
+ else pb.hidden=true;
 }
 function view(){const n=D.moedas[cur].c.length;const vis=zoom===0?n:Math.min(zoom,n);return{n,vis,max:Math.max(0,n-vis)}}
 function drawCv(){
@@ -624,7 +680,12 @@ function drawCv(){
  cv.width=W*dpr;cv.height=H*dpr;const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);
  const V=view();start=Math.max(0,Math.min(start,V.max));const a=start,b=a+V.vis,data=c.slice(a,b);if(!data.length)return;
  const up=cs('--good'),dn=cs('--bad'),mu=cs('--muted'),ln=cs('--line'),ac=cs('--accent');
- let lo=Math.min(...data.map(d=>d[3])),hi=Math.max(...data.map(d=>d[2]));const pad=(hi-lo)*.08||hi*.05;lo-=pad;hi+=pad;
+ let lo=Math.min(...data.map(d=>d[3])),hi=Math.max(...data.map(d=>d[2]));
+ const pa=D.abertas.find(x=>x.m===m.nome),niv=[];
+ if(pa){niv.push([pa.px0,ac,[6,4],'entrada'],[pa.stop,dn,[3,3],pa.tp1?'stop (empate)':'stop']);
+  const alvo=pa.px0*(1+(pa.tp1?D.cfg.tp2:D.cfg.tp1));niv.push([alvo,up,[2,4],pa.tp1?'TP2':'TP1']);
+  [pa.px0,pa.stop].forEach(v=>{lo=Math.min(lo,v);hi=Math.max(hi,v)})}
+ const pad=(hi-lo)*.08||hi*.05;lo-=pad;hi+=pad;
  const AX=74,VH=44,pw=W-AX,ph=H-VH-16,y=v=>8+(hi-v)/(hi-lo)*ph,step=pw/data.length,bw=Math.max(1,Math.min(10,step*.7));
  g.font='11px ui-monospace,monospace';g.textBaseline='middle';
  for(let i=0;i<=4;i++){const v=lo+(hi-lo)*i/4,yy=y(v);g.strokeStyle=ln;g.lineWidth=1;g.beginPath();g.moveTo(0,yy);g.lineTo(pw,yy);g.stroke();g.fillStyle=mu;g.textAlign='left';g.fillText(fp(v),pw+6,yy)}
@@ -633,6 +694,9 @@ function drawCv(){
   g.beginPath();g.moveTo(x,y(d[2]));g.lineTo(x,y(d[3]));g.stroke();
   g.fillRect(x-bw/2,y(Math.max(d[1],d[4])),bw,Math.max(1,Math.abs(y(d[1])-y(d[4]))));
   g.globalAlpha=.35;const vh=d[5]/vm*(VH-6);g.fillRect(x-bw/2,H-vh,bw,vh);g.globalAlpha=1});
+ niv.forEach(n=>{if(n[0]<lo||n[0]>hi)return;const yy=y(n[0]);g.strokeStyle=n[1];g.setLineDash(n[2]);g.lineWidth=1.2;g.beginPath();g.moveTo(0,yy);g.lineTo(pw,yy);g.stroke();g.setLineDash([]);
+  g.fillStyle=n[1];g.textAlign='right';g.fillText(n[3]+' '+fp(n[0]),pw-6,yy-8)});
+ const lp=data[data.length-1][4],ly=y(lp);g.fillStyle=cs('--fg');g.fillRect(pw+2,ly-8,AX-4,16);g.fillStyle='#140d0f';g.textAlign='left';g.fillText(fp(lp),pw+5,ly);
  const xo=ts=>{if(ts<c[0][0])return null;const i=idxOf(c,ts)-a;return i<0||i>=data.length?null:i*step+step/2};
  D.trades.filter(t=>t.m===m.nome).forEach(t=>{const x0=xo(t.ts0),x1=xo(t.ts1);if(x0==null&&x1==null)return;
   g.strokeStyle=t.pnl>=0?up:dn;g.globalAlpha=.7;g.setLineDash([4,3]);g.beginPath();g.moveTo(x0==null?0:x0,y(t.px0));g.lineTo(x1==null?pw:x1,y(t.px1));g.stroke();g.setLineDash([]);g.globalAlpha=1});
@@ -656,7 +720,7 @@ $('#tabs').addEventListener('click',e=>{const b=e.target.closest('.tab');if(!b)r
 $('#tb').addEventListener('click',e=>{const r=e.target.closest('tr.lk');if(r)focus(r.dataset.m,+r.dataset.t)});
 $('#zoom').addEventListener('change',e=>{zoom=+e.target.value;drawCv()});
 $('#pos').addEventListener('input',e=>{start=Math.round(+e.target.value/1000*view().max);drawCv()});
-addEventListener('resize',()=>{drawEq();drawCv()});
+addEventListener('resize',()=>{drawEq();drawCv();linhas()});
 head();tabs();trades();
 if(D.moedas.length){const t=D.trades[0];if(t){const i=D.moedas.findIndex(m=>m.nome===t.m);cur=Math.max(0,i);start=Math.max(0,idxOf(D.moedas[cur].c,t.ts0)-90);tabs()}else{start=1e9}}
 drawEq();drawCv();
