@@ -39,6 +39,16 @@ EXCLUIR_MINTS = {
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
 }
 
+# Identidades conferidas na categoria Solana Meme da CoinGecko e no Solscan.
+# A seleção do pool usa métricas ao vivo, nunca apenas o símbolo.
+MEMES_SOLANA = {
+    "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",  # BONK
+    "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",  # WIF
+    "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",  # POPCAT
+    "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5",  # MEW
+    "2qEHjDLDLbuBgRYvsxhc5D6uDWAivNFZGan56P1tpump",  # PNUT
+}
+
 CFG = {
     "capital": 50.0,     # banca fictícia inicial (USD)
     "tamanho": 0.20,     # Sizer: fração do patrimônio por entrada (20% de $50 = $10)
@@ -126,8 +136,11 @@ def gravar_json(caminho, obj):
 def cmd_descobrir(a):
     achados = {}
     rotas = ["trending_pools", "pools?sort=h24_volume_usd_desc"]
-    for rota in rotas:
-        for pagina in range(1, a.paginas + 1):
+    rotas = [(rota, a.paginas) for rota in rotas]
+    if a.memes:
+        rotas.extend((f"tokens/{mint}/pools", 1) for mint in sorted(MEMES_SOLANA))
+    for rota, paginas in rotas:
+        for pagina in range(1, paginas + 1):
             sep = "&" if "?" in rota else "?"
             url = "%s/networks/solana/%s%spage=%d" % (GT, rota, sep, pagina)
             try:
@@ -159,6 +172,7 @@ def cmd_descobrir(a):
         p for p in achados.values()
         if p["liq"] >= a.min_liq and (p["idade_h"] is None or p["idade_h"] >= a.min_idade_h)
         and p["vol24"] >= a.min_vol24 and p["mint"]
+        and (not a.memes or p["mint"] in MEMES_SOLANA)
         and p["nome"].upper() not in EXCLUIR_NOMES and p["mint"] not in EXCLUIR_MINTS
     ]
     lista.sort(key=lambda p: -p["vol24"])
@@ -902,6 +916,7 @@ def main():
 
     def desc(p):
         p.add_argument("--top", type=int, default=5)
+        p.add_argument("--memes", action="store_true", help="limita a memecoins verificadas por endereço")
         p.add_argument("--paginas", type=int, default=3)
         p.add_argument("--min-liq", dest="min_liq", type=float, default=30000)
         p.add_argument("--min-vol24", type=float, default=20000)

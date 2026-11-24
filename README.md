@@ -11,6 +11,6 @@ Consulte [requisitos](REQUIREMENTS.md), [auditoria](AUDIT.md), [roadmap](ROADMAP
 - Acesse o painel em https://licitazero.github.io/mesa-agentes/.
 - Para iniciar ou testar uma rodada pelo GitHub, abra **Actions → mesa-agentes → Run workflow** na branch **main**.
 - O GitHub agenda rodadas a cada cinco minutos e pode atrasar. O painel verifica os dados a cada minuto. Atrasos podem impedir o registro de sinais ao vivo.
-- A campanha usa até cinco pools por liquidez e volume, com exclusão de SOL e stablecoins conhecidas. A identificação por pool e símbolo pode incluir outros tokens especulativos. As fontes são GeckoTerminal e RugCheck.
+- A campanha usa até cinco pools por liquidez e volume, dentre os endereços verificados em MEMES_SOLANA. SOL, stablecoins e ativos tokenizados não integram o universo da campanha. As fontes são GeckoTerminal e RugCheck.
 - A branch de dados vivo guarda estado, candles, log e resultado final. O motor encerra na primeira rodada após o fim de 31/12/2026 em Brasília, com o último candle fechado disponível. Rodadas posteriores preservam esse resultado.
 - A operação é inteiramente simulada. O histórico de risco não é retroativo. O Rug Gate ao vivo registra parecer por candle quando observado, e o backtest padrão mantém a ausência dessa fonte explícita.

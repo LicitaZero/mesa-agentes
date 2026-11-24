@@ -46,7 +46,7 @@ jobs:
             exit 0
           fi
           if [ ! -s pools.json ]; then
-            python "$GITHUB_WORKSPACE/mesa_agentes.py" descobrir --top 5
+            python "$GITHUB_WORKSPACE/mesa_agentes.py" descobrir --top 5 --memes
             python -c "import json; p=json.load(open('pools.json')); assert 0 < len(p) <= 5, 'Nenhum pool elegível'"
             python "$GITHUB_WORKSPACE/mesa_agentes.py" baixar --paginas 3
           fi
