@@ -1,0 +1,26 @@
+name: Tarefa técnica
+description: Requisitos e critérios para implementação
+title: "[Tarefa] "
+body:
+  - type: textarea
+    id: objetivo
+    attributes:
+      label: Objetivo e contexto
+    validations:
+      required: true
+  - type: textarea
+    id: escopo
+    attributes:
+      label: Escopo e exclusões
+    validations:
+      required: true
+  - type: textarea
+    id: aceite
+    attributes:
+      label: Critérios de aceitação e testes
+    validations:
+      required: true
+  - type: textarea
+    id: riscos
+    attributes:
+      label: Riscos, dependências e aprovações
