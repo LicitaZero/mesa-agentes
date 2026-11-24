@@ -32,11 +32,21 @@ GT = "https://api.geckoterminal.com/api/v2"
 RUG = "https://api.rugcheck.xyz/v1"
 PAUSA_API = 2.3  # segundos entre chamadas; a API gratuita aceita cerca de 30 por minuto
 # pools de SOL e stablecoins não entram: o teste é de memecoins
-EXCLUIR_NOMES = {"SOL", "WSOL", "USDC", "USDT", "USDS", "PYUSD"}
+EXCLUIR_NOMES = {"SOL", "WSOL", "USDC", "USDT", "USDS", "PYUSD", "USDE", "USDX", "USD1", "USDG", "DAI", "USDD", "EURC", "USDH", "UXD"}
 EXCLUIR_MINTS = {
     "So11111111111111111111111111111111111111112",
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+}
+
+# Identidades conferidas na categoria Solana Meme da CoinGecko e no Solscan.
+# A seleção do pool usa métricas ao vivo, nunca apenas o símbolo.
+MEMES_SOLANA = {
+    "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",  # BONK
+    "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",  # WIF
+    "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",  # POPCAT
+    "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5",  # MEW
+    "2qEHjDLDLbuBgRYvsxhc5D6uDWAivNFZGan56P1tpump",  # PNUT
 }
 
 CFG = {
@@ -126,8 +136,11 @@ def gravar_json(caminho, obj):
 def cmd_descobrir(a):
     achados = {}
     rotas = ["trending_pools", "pools?sort=h24_volume_usd_desc"]
-    for rota in rotas:
-        for pagina in range(1, a.paginas + 1):
+    rotas = [(rota, a.paginas) for rota in rotas]
+    if a.memes:
+        rotas.extend((f"tokens/{mint}/pools", 1) for mint in sorted(MEMES_SOLANA))
+    for rota, paginas in rotas:
+        for pagina in range(1, paginas + 1):
             sep = "&" if "?" in rota else "?"
             url = "%s/networks/solana/%s%spage=%d" % (GT, rota, sep, pagina)
             try:
@@ -158,10 +171,15 @@ def cmd_descobrir(a):
     lista = [
         p for p in achados.values()
         if p["liq"] >= a.min_liq and (p["idade_h"] is None or p["idade_h"] >= a.min_idade_h)
+        and p["vol24"] >= a.min_vol24 and p["mint"]
+        and (not a.memes or p["mint"] in MEMES_SOLANA)
         and p["nome"].upper() not in EXCLUIR_NOMES and p["mint"] not in EXCLUIR_MINTS
     ]
     lista.sort(key=lambda p: -p["vol24"])
-    lista = lista[: a.top]
+    por_token = {}
+    for pool in lista:
+        por_token.setdefault(pool["mint"], pool)
+    lista = list(por_token.values())[:a.top]
     usados = {}
     for p in lista:  # nomes únicos
         n = usados.get(p["nome"], 0)
@@ -302,7 +320,7 @@ def simular(moedas, cfg, inicio_ts=None, fechar_fim=True):
         p["frac"] -= frac
         p["saidas"].append({"ts": ts, "px": px, "frac": frac, "motivo": motivo})
         tipo = "stop" if motivo.startswith("stop") else ("tp" if motivo.startswith("TP") else "saida")
-        marks.append({"m": moedas[p["k"]]["nome"], "ts": ts, "tipo": tipo, "px": px})
+        marks.append({"m": moedas[p["k"]]["nome"], "ts": ts, "tipo": tipo, "px": px, "motivo": motivo, "fracao": frac, "valor_liquido": rec})
         if p["frac"] <= 1e-9:
             trades.append({
                 "m": moedas[p["k"]]["nome"], "ts0": p["ts0"], "px0": p["ref"], "ts1": ts, "px1": px,
@@ -331,10 +349,12 @@ def simular(moedas, cfg, inicio_ts=None, fechar_fim=True):
     ultimo_ts = None
     for ts in sorted(por_ts):
         ultimo_ts = ts
-        for k, i in sorted(por_ts[ts]):
+        rodadas = sorted(por_ts[ts])
+        for k, i in rodadas:
+            ultimo[k] = moedas[k]["c"][i][1]
+        for k, i in rodadas:
             m = moedas[k]
             r = m["c"][i]
-            ultimo[k] = r[4]
             p = pos.get(k)
             if k in pend and p is None:
                 pd = pend.pop(k)
@@ -349,14 +369,18 @@ def simular(moedas, cfg, inicio_ts=None, fechar_fim=True):
                             "custo": custo, "frac": 1.0, "tp1": False, "stop": ref * (1 - cfg["stop"]),
                             "i0": i, "ts0": ts, "saidas": [], "recebido": 0.0, "sinais": pd["sig"],
                         }
-                        marks.append({"m": m["nome"], "ts": ts, "tipo": "compra", "px": ref})
+                        marks.append({"m": m["nome"], "ts": ts, "tipo": "compra", "px": ref, "custo": custo})
             if p is not None and k in pos:
                 gerenciar(p, i, r)
-            if (k not in pos and k not in pend and i >= cool.get(k, -1) and m["rug_ok"]
+            rug_por_candle = m.get("rug_por_candle")
+            rug_ok = m["rug_ok"] if rug_por_candle is None else rug_por_candle.get(str(ts), False)
+            if (k not in pos and k not in pend and i >= cool.get(k, -1) and rug_ok
                     and (inicio_ts is None or ts >= inicio_ts)):
                 n, nomes = m["_sig"][i]
                 if n >= cfg["min_sinais"]:
                     pend[k] = {"ts": ts, "sig": nomes}
+        for k, i in rodadas:
+            ultimo[k] = moedas[k]["c"][i][4]
         eq = estado["cash"] + sum(valor(q) for q in pos.values())
         curva.append([ts, round(eq, 4)])
 
@@ -583,7 +607,7 @@ const D=__DADOS__;
 const $=s=>document.querySelector(s);
 const fm=(n,d=2)=>n.toLocaleString('pt-BR',{minimumFractionDigits:d,maximumFractionDigits:d});
 function fp(v){if(!isFinite(v)||v<=0)return'0';const d=Math.min(12,Math.max(2,3-Math.floor(Math.log10(v))));return v.toFixed(d)}
-const dt=ts=>new Date(ts*1000).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+const dt=ts=>new Date(ts*1000).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
 const cs=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 let cur=0,zoom=250,start=0;
 function idxOf(c,ts){let lo=0,hi=c.length-1;while(lo<hi){const m=(lo+hi+1)>>1;if(c[m][0]<=ts)lo=m;else hi=m-1}return lo}
@@ -595,8 +619,8 @@ function head(){
  +kpi('Queda máxima',fm(s.dd,1)+'%','down')+kpi('Ganho médio',s.media_ganho==null?'-':'$'+fm(s.media_ganho))+kpi('Perda média',s.media_perda==null?'-':'$'+fm(s.media_perda))
  +kpi('Comprar e segurar',s.bh==null?'-':(s.bh>=0?'+':'')+fm(s.bh,1)+'%');
  const a=s.partes.amostra1,b=s.partes.amostra2;
- $('#split').textContent=(a&&b)?('Primeiros 70% do período: '+a.n+' operações, $'+fm(a.pnl)+'. Últimos 30%: '+b.n+' operações, $'+fm(b.pnl)+'. Se os dois lados discordam muito, desconfie.'):'';
- $('#avisos').innerHTML=D.avisos.map(x=>'<li>'+x+'</li>').join('');
+ $('#split').textContent=(a&&b)?('Primeiros 70% do período: '+esc(a.n)+' operações, $'+fm(a.pnl)+'. Últimos 30%: '+b.n+' operações, $'+fm(b.pnl)+'. Se os dois lados discordam muito, desconfie.'):'';
+ $('#avisos').innerHTML=D.avisos.map(x=>'<li>'+esc(x)+'</li>').join('');
 }
 function drawEq(){
  const cv=$('#eq'),dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;if(!W||!D.curva.length)return;
@@ -610,13 +634,13 @@ function drawEq(){
  g.fillText('$'+fm(hi,2),W-56,Y(hi)+4);g.fillText('$'+fm(lo,2),W-56,Y(lo)-4);
 }
 function tabs(){
- $('#tabs').innerHTML=D.moedas.map((m,i)=>{const n=D.trades.filter(t=>t.m===m.nome).length;return '<button class="tab" data-i="'+i+'" aria-pressed="'+(i===cur)+'">'+m.nome+' <span class="mute mono">'+n+'</span></button>'}).join('');
+ $('#tabs').innerHTML=D.moedas.map((m,i)=>{const n=D.trades.filter(t=>t.m===m.nome).length;return '<button class="tab" data-i="'+i+'" aria-pressed="'+(i===cur)+'">'+esc(m.nome)+' <span class="mute mono">'+n+'</span></button>'}).join('');
  agentes();
 }
 function agentes(){
  const m=D.moedas[cur],v=m.veredito;
- $('#hub').innerHTML='<div class="ring" style="'+(v.go?'border-color:var(--good)':'')+'">CÉREBRO<br>regras</div><div><div class="mute mono">'+m.nome+' · último candle</div><div class="verdict" style="color:'+(v.go?'var(--good)':v.r==='Bloqueado'?'var(--bad)':'var(--fg)')+'">'+v.r+'</div><div class="mute">'+v.p+'</div></div>';
- $('#agents').innerHTML=m.agentes.map(a=>'<div class="agent '+a.s+'"><div class="n">'+a.n+'</div><div class="t mono">'+a.t+'</div></div>').join('');
+ $('#hub').innerHTML='<div class="ring" style="'+(v.go?'border-color:var(--good)':'')+'">CÉREBRO<br>regras</div><div><div class="mute mono">'+esc(m.nome)+' · último candle</div><div class="verdict" style="color:'+(v.go?'var(--good)':v.r==='Bloqueado'?'var(--bad)':'var(--fg)')+'">'+esc(v.r)+'</div><div class="mute">'+esc(v.p)+'</div></div>';
+ $('#agents').innerHTML=m.agentes.map(a=>'<div class="agent '+a.s+'"><div class="n">'+esc(a.n)+'</div><div class="t mono">'+esc(a.t)+'</div></div>').join('');
 }
 function view(){const n=D.moedas[cur].c.length;const vis=zoom===0?n:Math.min(zoom,n);return{n,vis,max:Math.max(0,n-vis)}}
 function drawCv(){
@@ -642,11 +666,12 @@ function drawCv(){
  g.fillStyle=mu;g.textAlign='left';g.fillText(dt(data[0][0]),4,H-VH-2);g.textAlign='right';g.fillText(dt(data[data.length-1][0]),pw-4,H-VH-2);
  $('#pos').value=V.max?Math.round(start/V.max*1000):1000;
 }
+function esc(v){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function trades(){
- const rows=D.trades.slice().sort((x,y)=>y.ts0-x.ts0).map(t=>'<tr class="lk" data-m="'+t.m+'" data-t="'+t.ts0+'"><td>'+t.m+'</td><td class="mono">'+dt(t.ts0)+'</td><td class="mono">'+dt(t.ts1)+'</td><td>'+t.motivos.join(' + ')+'</td><td>'+t.sinais.join(', ')+'</td><td class="mono '+(t.pnl>=0?'up':'down')+'">'+(t.pct>=0?'+':'')+fm(t.pct,1)+'%</td><td class="mono '+(t.pnl>=0?'up':'down')+'">'+(t.pnl>=0?'+':'')+'$'+fm(t.pnl)+'</td></tr>').join('');
+ const rows=D.trades.slice().sort((x,y)=>y.ts0-x.ts0).map(t=>'<tr class="lk" data-m="'+esc(t.m)+'" data-t="'+t.ts0+'"><td>'+esc(t.m)+'</td><td class="mono">'+dt(t.ts0)+'</td><td class="mono">'+dt(t.ts1)+'</td><td>'+esc(t.motivos.join(' + '))+'</td><td>'+esc(t.sinais.join(', '))+'</td><td class="mono '+(t.pnl>=0?'up':'down')+'">'+(t.pct>=0?'+':'')+fm(t.pct,1)+'%</td><td class="mono '+(t.pnl>=0?'up':'down')+'">'+(t.pnl>=0?'+':'')+'$'+fm(t.pnl)+'</td></tr>').join('');
  $('#tb').innerHTML='<tr><th>Moeda</th><th>Entrada</th><th>Saída</th><th>Motivo</th><th>Sinais</th><th>%</th><th>$</th></tr>'+(rows||'<tr><td colspan="7" class="mute">Nenhuma operação fechada neste período.</td></tr>');
- const ab=D.abertas.map(x=>'<div class="mono">'+x.m+' · entrada '+fp(x.px0)+' · agora '+fp(x.px)+' · <span class="'+(x.pct>=0?'up':'down')+'">'+(x.pct>=0?'+':'')+fm(x.pct,1)+'%</span></div>').join('')
-  +D.pendentes.map(x=>'<div class="mono mute">'+x.m+' · ordem pendente ('+x.sinais.join(', ')+'), executa na abertura do próximo candle</div>').join('');
+ const ab=D.abertas.map(x=>'<div class="mono">'+esc(x.m)+' · entrada '+fp(x.px0)+' · agora '+fp(x.px)+' · <span class="'+(x.pct>=0?'up':'down')+'">'+(x.pct>=0?'+':'')+fm(x.pct,1)+'%</span></div>').join('')
+  +D.pendentes.map(x=>'<div class="mono mute">'+esc(x.m)+' · entrada simulada pendente ('+esc(x.sinais.join(', '))+'), executa na abertura do próximo candle</div>').join('');
  $('#abertas').innerHTML=ab||'<span class="mute">Nada aberto neste momento.</span>';
 }
 function focus(nome,ts){const i=D.moedas.findIndex(m=>m.nome===nome);if(i<0)return;cur=i;zoom=250;$('#zoom').value='250';
@@ -738,17 +763,23 @@ def cmd_ao_vivo(a):
         encerrado = agora() > fim_ts
         for m in moedas:
             m["c"] = [r for r in m["c"] if r[0] <= fim_ts]
-        if encerrado:
-            for m in moedas:
-                m["c_viva"] = None
-        else:
-            separar_viva(moedas, cfg["agg"])
+        separar_viva(moedas, cfg["agg"])
+        pareceres = est.setdefault("rug_por_candle", {})
+        for m in moedas:
+            por_candle = pareceres.setdefault(m["addr"], {})
+            m["rug_por_candle"] = por_candle
+            if m["c"] and not encerrado:
+                ultimo = m["c"][-1][0]
+                if ultimo + 2 * cfg["agg"] * 60 > agora():
+                    por_candle.setdefault(str(ultimo), m["rug_ok"])
         res = simular(moedas, cfg, inicio_ts=est["inicio"], fechar_fim=encerrado)
         st = estatisticas(res, cfg)
+        if encerrado:
+            res["pendentes"] = []
         for k in res["marks"]:
             if k["ts"] < est["inicio"]:
                 continue
-            chave = "%s|%d|%s" % (k["m"], k["ts"], k["tipo"])
+            chave = "%s|%d|%s|%s" % (k["m"], k["ts"], k["tipo"], k.get("motivo", ""))
             if chave not in vistos:
                 vistos.add(chave)
                 print("[%s] %-8s %-14s a %.10f" % (fmt_ts(k["ts"]), k["tipo"].upper(), k["m"], k["px"]))
@@ -759,13 +790,15 @@ def cmd_ao_vivo(a):
         avisos = list(AVISOS_BASE) + [
             "Modo ao vivo: a simulação conta desde %s; o que vem antes só serve de histórico para os indicadores." % fmt_dia(est["inicio"]),
             "Cada posição simulada é de %.0f%% da banca ($%.2f). Numa operação real com valores pequenos assim, taxas fixas de rede e a derrapagem de pools pequenos pesam bem mais do que no modelo." % (cfg["tamanho"] * 100, cfg["capital"] * cfg["tamanho"]),
-            "As decisões acontecem quando cada candle de %d minutos fecha. A página atualiza a cada minuto, mas o candle em formação só aparece no gráfico." % cfg["agg"],
+            "As decisões acontecem quando cada candle de %d minutos fecha. A página verifica dados a cada minuto. O GitHub agenda as coletas a cada cinco minutos e pode atrasar. O candle em formação só aparece no gráfico." % cfg["agg"],
         ]
         modo = "%s · %s A %s · BANCA SIMULADA $%.0f · DADOS REAIS" % (
             "ENCERRADO" if encerrado else "AO VIVO", fmt_dia(est["inicio"]), fmt_dia(fim_ts), cfg["capital"])
         gerar_relatorio(res, st, cfg, "relatorio_ao_vivo.html" if a.html else None,
                         modo, avisos, json_path="vivo.json", max_candles=700)
         if encerrado:
+            gravar_json("resultado.json", {"encerrado_em": agora(), "fim_previsto": fim_ts, "estatisticas": st,
+                                             "operacoes": res["trades"], "banca_inicial": cfg["capital"]})
             Path("ENCERRADO").write_text("acompanhamento encerrado em %s UTC\n" % fmt_ts(agora()))
             print("Acompanhamento encerrado. Resultado final: $%.2f (%+.2f%%)" % (st["eq_final"], st["retorno_pct"]))
             return
@@ -838,7 +871,7 @@ function aplicar(novo){
 async function buscar(){
  if(carregando)return;carregando=true;
  try{
-  const u=location.hostname.split('.')[0],r=location.pathname.split('/')[1]||'';
+  const u='LicitaZero',r='mesa-agentes';
   const resp=await fetch('https://raw.githubusercontent.com/'+u+'/'+r+'/vivo/vivo.json?t='+Date.now(),{cache:'no-store'});
   if(!resp.ok)throw new Error('HTTP '+resp.status);
   aplicar(await resp.json());
@@ -883,8 +916,10 @@ def main():
 
     def desc(p):
         p.add_argument("--top", type=int, default=5)
+        p.add_argument("--memes", action="store_true", help="limita a memecoins verificadas por endereço")
         p.add_argument("--paginas", type=int, default=3)
         p.add_argument("--min-liq", dest="min_liq", type=float, default=30000)
+        p.add_argument("--min-vol24", type=float, default=20000)
         p.add_argument("--min-idade-h", dest="min_idade_h", type=float, default=72)
 
     p = sub.add_parser("demo"); comuns(p); p.set_defaults(f=cmd_demo)
