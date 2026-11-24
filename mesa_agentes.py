@@ -580,6 +580,12 @@ ul{margin:0;padding-left:18px;color:var(--muted)}li{margin:3px 0}
 .r1{grid-column:5/7;grid-row:1}.r2{grid-column:5/7;grid-row:2}.r3{grid-column:5/7;grid-row:3}
 .b1{grid-column:2/4;grid-row:4}.b2{grid-column:4/6;grid-row:4}
 @media (max-width:760px){.orbit{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:none}.orbit svg{display:none}.core{grid-column:1/3;grid-row:auto}.node{grid-column:auto!important;grid-row:auto!important}}
+.flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:6px 8px;margin:0 0 12px}
+.step{flex:1 1 120px;min-width:0;display:flex;flex-direction:column;gap:1px;padding:6px 10px;background:var(--surface2);border:1px solid var(--line);border-top:3px solid var(--muted);border-radius:8px}
+.step b{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase}.step span{font-size:.74rem;color:var(--muted)}
+.step.ok{border-top-color:var(--good)}.step.warn{border-top-color:var(--warn)}.step.bad{border-top-color:var(--bad)}
+.arr{align-self:center;color:var(--muted)}
+@media (max-width:760px){.arr{display:none}.step{flex:1 1 44%}}
 .av{flex:0 0 22px;height:22px;border-radius:50%;display:inline-grid;place-items:center;font:700 .72rem system-ui,sans-serif;color:#140d0f}
 .tab{display:inline-flex;align-items:center;gap:8px}
 .tab .dot{width:7px;height:7px;border-radius:50%;background:var(--accent)}
@@ -598,6 +604,7 @@ ul{margin:0;padding-left:18px;color:var(--muted)}li{margin:3px 0}
 <div class="mute" id="split" style="margin-top:8px"></div></div>
 <div class="panel"><h2>Entradas e saídas por moeda</h2><div class="tabs" id="tabs"></div>
 <div class="orbit" id="orbit"></div>
+<div class="flow" id="flow" aria-label="Fluxo da decisão"></div>
 <div class="ctl"><label>Janela <select id="zoom"><option value="100">100 candles</option><option value="250" selected>250 candles</option><option value="600">600 candles</option><option value="0">tudo</option></select></label>
 <input id="pos" type="range" min="0" max="1000" value="1000" aria-label="Posição no tempo"></div>
 <div class="chead" id="chead"></div>
@@ -645,7 +652,18 @@ const ICO={'Stop Guard':'SG','TP Ladder':'TP','Executor':'EX','Volume':'VO','Rom
 function tabs(){
  $('#tabs').innerHTML=D.moedas.map((m,i)=>{const ch=chg(m),n=D.trades.filter(t=>t.m===m.nome).length,ab=D.abertas.some(x=>x.m===m.nome);
   return '<button class="tab" data-i="'+i+'" aria-pressed="'+(i===cur)+'" title="'+n+' operações fechadas"><span class="av" style="background:'+hcor(m.nome)+'">'+ini(m.nome)+'</span><b>'+m.nome+'</b><span class="mono '+(ch>=0?'up':'down')+'">'+(ch>=0?'+':'')+fm(ch,0)+'%</span>'+(ab?'<span class="dot" title="posição aberta"></span>':'')+'</button>'}).join('');
- agentes();cabeca();
+ agentes();cabeca();fluxo();
+}
+function fluxo(){
+ const m=D.moedas[cur],A={};m.agentes.forEach(a=>{A[a.n]=a.s});
+ const aberta=D.abertas.some(x=>x.m===m.nome),pend=D.pendentes.some(x=>x.m===m.nome);
+ const sinais=['Volume','Rompimento','Pressão'].filter(n=>A[n]==='ok').length;
+ const E=[['Detectar',aberta?'ok':(A['Volume']==='ok'||A['Rompimento']==='ok')?'ok':(A['Volume']==='warn'?'warn':'bad'),aberta?'válido na entrada':'volume ou rompimento'],
+  ['Confirmar',aberta?'ok':sinais>=2?'ok':(sinais===1?'warn':'bad'),aberta?'válido na entrada':sinais+' de 3 sinais'],
+  ['Triar',A['Rug Gate']==='ok'?'ok':A['Rug Gate']==='bad'?'bad':'idle',A['Rug Gate']==='idle'?'Rug Gate não verificado':'Rug Gate'],
+  ['Executar',(aberta||pend)?'ok':'idle',aberta?'em posição':pend?'ordem pendente':'aguardando'],
+  ['Gerir risco',aberta?'ok':'idle',aberta?'stop e alvos ativos':'sem posição']];
+ $('#flow').innerHTML=E.map((e,i)=>(i?'<span class="arr">→</span>':'')+'<div class="step '+e[1]+'"><b>'+e[0]+'</b><span class="mono">'+e[2]+'</span></div>').join('');
 }
 function agentes(){
  const m=D.moedas[cur],v=m.veredito;
